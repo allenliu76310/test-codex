@@ -366,25 +366,33 @@ class AttendanceHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(query_string)
         message = html.escape(query.get("msg", [""])[0])
         html_content = f"""<!doctype html>
-<html lang=\"zh-Hant\"><head><meta charset=\"UTF-8\"/><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>
-<title>登入 - 員工打卡系統</title>
+<html lang="zh-Hant"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>後台登入 - 員工打卡系統</title>
 <style>
 body {{ font-family: Arial, sans-serif; background:#f3f6fb; }}
-.card {{ max-width: 560px; margin: 50px auto; background:#fff; padding:20px; border-radius:12px; box-shadow:0 4px 14px rgba(0,0,0,.08); }}
-input, select, button {{ width:100%; padding:10px; margin:6px 0; border-radius:8px; border:1px solid #c7d2e2; }}
+.card {{ max-width: 560px; margin: 50px auto; background:#fff; padding:24px; border-radius:12px; box-shadow:0 4px 14px rgba(0,0,0,.08); }}
+input, button {{ width:100%; padding:12px; margin:8px 0; border-radius:8px; border:1px solid #c7d2e2; font-size:16px; }}
 button {{ background:#1f6feb; color:#fff; border:none; }}
 .hint {{ background:#eef6ff; padding:10px; border-radius:8px; margin:8px 0; }}
+.field label {{ display:block; font-weight:700; margin-top:8px; }}
+.field small {{ display:block; color:#5b6470; margin-bottom:4px; }}
 </style></head>
-<body><div class=\"card\"><h1>後台登入</h1>
+<body><div class="card"><h1>後台登入</h1>
 <p>管理員帳號固定為 <b>ADMIN</b>，預設密碼 <b>admin123</b>。</p>
-<p>員工若只要打卡，請前往 <a href=\"/kiosk\">員工打卡頁面</a>。</p>
+<p>員工若只要打卡，請前往 <a href="/kiosk">員工打卡頁面</a>。</p>
 {f'<div class="hint">{message}</div>' if message else ''}
-<form method=\"post\" action=\"/login\">
-<select name=\"role\" required><option value=\"employee\">員工</option><option value=\"admin\">管理員</option></select>
-<input type=\"text\" name=\"employee_id\" placeholder=\"員工編號\" required />
-<input type=\"text\" name=\"employee_name\" placeholder=\"員工姓名（首次員工登入可填）\" />
-<input type=\"password\" name=\"password\" placeholder=\"密碼\" />
-<button type=\"submit\">登入</button>
+<form method="post" action="/login">
+<div class="field">
+  <label for="employee_id">使用者名稱（必填）</label>
+  <small>請輸入後台管理員帳號，例如：ADMIN</small>
+  <input id="employee_id" type="text" name="employee_id" placeholder="例如：ADMIN" required />
+</div>
+<div class="field">
+  <label for="password">密碼（必填）</label>
+  <small>請輸入後台管理員密碼</small>
+  <input id="password" type="password" name="password" placeholder="請輸入密碼" required />
+</div>
+<button type="submit">登入</button>
 </form></div></body></html>"""
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -472,29 +480,18 @@ a {{ display:inline-block; margin-top:14px; text-decoration:none; background:#1f
         self.wfile.write(html_content.encode("utf-8"))
 
     def _handle_login(self, form_data: dict[str, list[str]]) -> None:
-        role = form_data.get("role", [""])[0].strip()
         employee_id = form_data.get("employee_id", [""])[0].strip()
-        employee_name = form_data.get("employee_name", [""])[0].strip() or employee_id
         password = form_data.get("password", [""])[0].strip()
 
-        if role not in {"employee", "admin"} or not employee_id:
+        if not employee_id or not password:
             self._redirect(f"/login?msg={urllib.parse.quote('登入資料不完整')}")
             return
 
-        if role == "admin":
-            if employee_id != ADMIN_ID or hash_password(password) != ADMIN_PASSWORD_HASH:
-                self._redirect(f"/login?msg={urllib.parse.quote('管理員帳密錯誤')}")
-                return
-            employee_name = "系統管理員"
-        else:
-            user = get_user_by_employee_id(employee_id)
-            if user and user["password_hash"] and hash_password(password) != user["password_hash"]:
-                self._redirect(f"/login?msg={urllib.parse.quote('員工密碼錯誤')}")
-                return
-            if user:
-                employee_name = user["employee_name"]
+        if employee_id != ADMIN_ID or hash_password(password) != ADMIN_PASSWORD_HASH:
+            self._redirect(f"/login?msg={urllib.parse.quote('管理員帳密錯誤')}")
+            return
 
-        token = create_session(role, employee_id, employee_name)
+        token = create_session("admin", ADMIN_ID, "系統管理員")
         self._redirect("/", session_token=token)
 
     def _handle_kiosk_clock(self, form_data: dict[str, list[str]]) -> None:
