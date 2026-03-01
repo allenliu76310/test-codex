@@ -395,25 +395,51 @@ button {{ background:#1f6feb; color:#fff; border:none; }}
         query = urllib.parse.parse_qs(query_string)
         message = html.escape(query.get("msg", [""])[0])
         html_content = f"""<!doctype html>
-<html lang=\"zh-Hant\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+<html lang="zh-Hant"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>員工打卡</title>
 <style>
 body {{ font-family: Arial, sans-serif; background:#f6fbff; }}
-.card {{ max-width: 640px; margin: 40px auto; background:#fff; padding:24px; border-radius:14px; box-shadow:0 4px 14px rgba(0,0,0,.08); }}
+.card {{ max-width: 760px; margin: 40px auto; background:#fff; padding:24px; border-radius:14px; box-shadow:0 4px 14px rgba(0,0,0,.08); }}
 input, select, button {{ width:100%; margin:8px 0; padding:12px; border-radius:8px; border:1px solid #c7d2e2; font-size:16px; }}
 button {{ background:#1f6feb; color:#fff; border:none; font-size:18px; }}
 .hint {{ background:#eef6ff; color:#154b8b; padding:10px; border-radius:8px; margin:8px 0; }}
+.field label {{ display:block; font-weight:700; margin-top:8px; }}
+.field small {{ display:block; color:#5b6470; margin-bottom:4px; }}
+.datetime-board {{ background: linear-gradient(135deg, #0f4c81, #1f6feb); color:#fff; border-radius:14px; padding:14px 18px; margin:12px 0 16px; text-align:center; }}
+.datetime-date {{ font-size:34px; font-weight:700; }}
+.datetime-time {{ font-size:62px; font-weight:800; line-height:1.1; margin-top:4px; font-variant-numeric: tabular-nums; }}
 </style></head>
-<body><div class=\"card\"><h1>員工打卡</h1>
+<body><div class="card"><h1>員工打卡</h1>
 <p>請輸入員工編號與密碼，系統會自動帶出姓名並顯示打卡結果。</p>
+<div class="datetime-board"><div class="datetime-date" id="current-date">--</div><div class="datetime-time" id="current-time">--:--:--</div></div>
 {f'<div class="hint">{message}</div>' if message else ''}
-<form method=\"post\" action=\"/kiosk/clock\">
-<input name=\"employee_id\" placeholder=\"員工編號\" required>
-<input type=\"password\" name=\"password\" placeholder=\"密碼\" required>
-<select name=\"event_type\" required><option value=\"check-in\">上班打卡</option><option value=\"check-out\">下班打卡</option></select>
-<button type=\"submit\">打卡</button>
+<form method="post" action="/kiosk/clock">
+<div class="field">
+  <label for="employee_id">員工編號（必填）</label>
+  <small>請輸入員工編號，例如：001 或 E102</small>
+  <input id="employee_id" name="employee_id" placeholder="例如：001" required>
+</div>
+<div class="field">
+  <label for="password">打卡密碼（必填）</label>
+  <small>請輸入此員工的打卡密碼</small>
+  <input id="password" type="password" name="password" placeholder="請輸入打卡密碼" required>
+</div>
+<div class="field">
+  <label for="event_type">打卡類型（必填）</label>
+  <small>請選擇上班打卡或下班打卡</small>
+  <select id="event_type" name="event_type" required><option value="check-in">上班打卡</option><option value="check-out">下班打卡</option></select>
+</div>
+<button type="submit">打卡</button>
 </form>
-<p><a href=\"/login\">後台登入</a></p></div></body></html>"""
+<p><a href="/login">後台登入</a></p></div>
+<script>
+function updateDateTime() {{
+  const now = new Date();
+  document.getElementById("current-date").textContent = now.toLocaleDateString("zh-TW", {{ year:"numeric", month:"long", day:"numeric", weekday:"long" }});
+  document.getElementById("current-time").textContent = now.toLocaleTimeString("zh-TW", {{ hour12:false }});
+}}
+updateDateTime(); setInterval(updateDateTime, 1000);
+</script></body></html>"""
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
