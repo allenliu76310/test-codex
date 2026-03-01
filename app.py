@@ -588,7 +588,9 @@ body {{ font-family: Arial, sans-serif; background:#f3f6fb; }}
 .container {{ max-width:900px; margin:30px auto; background:#fff; padding:20px; border-radius:12px; box-shadow:0 4px 14px rgba(0,0,0,.08); }}
 input, button {{ width:100%; margin:6px 0; padding:10px; border-radius:8px; border:1px solid #c7d2e2; }}
 button {{ background:#1f6feb; color:#fff; border:none; }}
-.grid3 {{ display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }}
+.grid3 {{ display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; align-items:end; }}
+.field label {{ display:block; font-weight:700; margin-top:4px; }}
+.field small {{ display:block; color:#5b6470; margin-top:2px; }}
 table {{ width:100%; border-collapse:collapse; margin-top:14px; }}
 th, td {{ border-bottom:1px solid #e8edf5; padding:8px; text-align:left; }}
 .hint {{ background:#eef6ff; padding:10px; border-radius:8px; margin-bottom:8px; }}
@@ -596,11 +598,23 @@ th, td {{ border-bottom:1px solid #e8edf5; padding:8px; text-align:left; }}
 <body><div class=\"container\"><h1>建立員工名單</h1>
 <p><a href=\"/\">回後台首頁</a> ｜ <a href=\"/kiosk\">員工打卡頁</a></p>
 {f'<div class="hint">{message}</div>' if message else ''}
-<form method=\"post\" action=\"/admin/employee/create\" class=\"grid3\">
-<input name=\"employee_id\" placeholder=\"員工編號\" required>
-<input name=\"employee_name\" placeholder=\"員工姓名\" required>
-<input type=\"password\" name=\"password\" placeholder=\"員工打卡密碼\" required>
-<button type=\"submit\">新增 / 更新員工</button>
+<form method="post" action="/admin/employee/create" class="grid3">
+<div class="field">
+  <label for="employee_id">員工編號（必填）</label>
+  <small>請輸入唯一代碼，例如：001 或 E102</small>
+  <input id="employee_id" name="employee_id" placeholder="例如：001" required>
+</div>
+<div class="field">
+  <label for="employee_name">員工姓名（必填）</label>
+  <small>請輸入員工真實姓名或顯示名稱</small>
+  <input id="employee_name" name="employee_name" placeholder="例如：王小明" required>
+</div>
+<div class="field">
+  <label for="password">打卡密碼（必填）</label>
+  <small>員工在打卡頁（/kiosk）要輸入這組密碼</small>
+  <input id="password" type="password" name="password" placeholder="請設定打卡密碼" required>
+</div>
+<button type="submit">新增 / 更新員工</button>
 </form>
 <table><thead><tr><th>員工編號</th><th>員工姓名</th></tr></thead><tbody>{rows}</tbody></table>
 </div></body></html>"""
