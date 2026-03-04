@@ -42,6 +42,39 @@ docker build -t face-video-analyzer .
 docker run --rm -p 5000:5000 face-video-analyzer
 ```
 
+### Windows PowerShell 常見錯誤
+
+若看到以下錯誤：
+
+```powershell
+docker : 無法辨識 'docker' 詞彙是否為 Cmdlet、函數、指令檔或可執行程式的名稱。
+```
+
+代表系統目前找不到 Docker CLI，常見原因與處理方式：
+
+1. 尚未安裝 Docker Desktop（Windows）
+   - 先安裝 Docker Desktop，安裝後重新開啟 PowerShell。
+2. 已安裝但 PATH 尚未生效
+   - 關閉全部 PowerShell 視窗再重開，或重新登入 Windows。
+3. 公司電腦權限限制
+   - 請聯絡 IT 開通 Docker Desktop / WSL2 權限。
+
+可先用以下指令確認：
+
+```powershell
+docker --version
+```
+
+若暫時無法使用 Docker，請改用 Python 方式啟動（同樣可執行本專案）：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install --upgrade pip
+pip install -r requirements.txt
+python app.py
+```
+
 ## API 簡介
 
 - `POST /analyze`：上傳影片，建立任務（回傳 `task_id`）
