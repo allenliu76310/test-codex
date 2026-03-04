@@ -9,8 +9,12 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import cv2
-import numpy as np
+try:
+    import cv2
+    import numpy as np
+except ModuleNotFoundError:
+    cv2 = None
+    np = None
 
 HOST = "0.0.0.0"
 PORT = 5000
@@ -42,6 +46,12 @@ def _face_embedding(face_gray: np.ndarray) -> np.ndarray:
 
 
 def analyze_video(video_path: Path, frame_stride: int = 12, similarity_threshold: float = 0.86) -> dict:
+    if cv2 is None or np is None:
+        raise RuntimeError(
+            "缺少必要套件：opencv-python 與 numpy。"
+            "請先執行 `pip install -r requirements.txt` 後再分析影片。"
+        )
+
     cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     detector = cv2.CascadeClassifier(cascade_path)
 
@@ -168,7 +178,7 @@ class FaceVideoHandler(BaseHTTPRequestHandler):
         )
 
         file_item = form["video"] if "video" in form else None
-        if not file_item or not getattr(file_item, "filename", ""):
+        if file_item is None or not getattr(file_item, "filename", ""):
             raise ValueError("請上傳影片檔案。")
 
         filename = Path(file_item.filename).name
