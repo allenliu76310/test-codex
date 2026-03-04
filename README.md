@@ -1,11 +1,21 @@
-# 員工線上打卡紀錄程式
+# 影片人臉重複辨識工具
 
-這是一個使用 Python 標準函式庫實作的簡易員工出勤打卡系統，支援：
+這是一個 Python Web 程式，提供「拖曳影片上傳」介面，並分析影片中的人臉是否重複出現。
 
-- 上班打卡 / 下班打卡
-- 首頁顯示最近 50 筆打卡紀錄
-- API 查詢所有紀錄 (`/api/records`)
-- 使用 SQLite 儲存資料
+## 功能
+
+- 拖曳上傳影片（或點擊選擇檔案）
+- 自動偵測人臉
+- 分群判斷是否為同一人
+- 顯示每位人物的出現次數與是否重複出現
+
+## 安裝需求
+
+建議使用 Python 3.10+
+
+```bash
+pip install opencv-python numpy
+```
 
 ## 啟動方式
 
@@ -15,13 +25,7 @@ python app.py
 
 開啟瀏覽器：`http://127.0.0.1:5000`
 
-## API 範例
+## 注意事項
 
-```bash
-curl -X POST http://127.0.0.1:5000/clock \
-  -d "employee_id=E001" \
-  -d "employee_name=王小明" \
-  -d "event_type=check-in"
-
-curl http://127.0.0.1:5000/api/records
-```
+- 目前使用 OpenCV Haar Cascade + 特徵向量相似度做人物分群，屬於輕量版本。
+- 影片解析度、角度、光線、遮擋都會影響辨識結果。
