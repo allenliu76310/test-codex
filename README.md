@@ -35,6 +35,27 @@ python app.py
 
 開啟瀏覽器：`http://127.0.0.1:5000`
 
+## 一鍵環境檢測與自動安裝
+
+本專案提供 `install.py`，會自動：
+
+- 檢查 Python 版本是否符合（>=3.10）
+- 檢查並升級 `pip`
+- 檢查 `requirements.txt` 內套件（包含 `opencv-python`、`numpy`）
+- 若缺少或版本不符，嘗試自動安裝/升級，並輸出檢查結果表格
+
+執行方式：
+
+```bash
+python install.py
+```
+
+Windows PowerShell：
+
+```powershell
+python .\install.py
+```
+
 ## Docker 一鍵啟動
 
 ```bash
