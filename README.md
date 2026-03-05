@@ -56,6 +56,15 @@ Windows PowerShell：
 python .\install.py
 ```
 
+> 小提醒：`install.py` 執行完會停留在終端機，等待你按 Enter，方便查看結果。
+> 若要在 CI 或自動化環境跳過停留，可設定：`NO_PAUSE_ON_EXIT=1`。
+
+
+### 執行狀態顯示
+
+- `app.py` 啟動後會持續在終端機顯示服務狀態（含任務數量與運行時間）。
+- 若啟動失敗，會先顯示錯誤，再等待按 Enter，避免視窗一閃而過。
+
 ## Docker 一鍵啟動
 
 ```bash

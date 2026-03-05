@@ -3,10 +3,10 @@ from __future__ import annotations
 import importlib.metadata
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +26,14 @@ class CheckResult:
 
 def run_cmd(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, text=True, capture_output=True)
+
+
+def wait_before_exit(message: str = "按 Enter 鍵結束視窗...") -> None:
+    if sys.stdin.isatty() and os.environ.get("NO_PAUSE_ON_EXIT") != "1":
+        try:
+            input(message)
+        except EOFError:
+            pass
 
 
 def parse_requirements(req_path: Path) -> list[tuple[str, str]]:
@@ -93,16 +101,13 @@ def attempt_install_python() -> str:
     system = platform.system().lower()
     candidates: list[list[str]] = []
 
-    if system == "windows":
-        if shutil.which("winget"):
-            candidates.append(["winget", "install", "-e", "--id", "Python.Python.3.11"])
-    elif system == "darwin":
-        if shutil.which("brew"):
-            candidates.append(["brew", "install", "python@3.11"])
-    elif system == "linux":
-        if shutil.which("apt-get"):
-            candidates.append(["sudo", "apt-get", "update"])
-            candidates.append(["sudo", "apt-get", "install", "-y", "python3.11", "python3.11-venv", "python3-pip"])
+    if system == "windows" and shutil.which("winget"):
+        candidates.append(["winget", "install", "-e", "--id", "Python.Python.3.11"])
+    elif system == "darwin" and shutil.which("brew"):
+        candidates.append(["brew", "install", "python@3.11"])
+    elif system == "linux" and shutil.which("apt-get"):
+        candidates.append(["sudo", "apt-get", "update"])
+        candidates.append(["sudo", "apt-get", "install", "-y", "python3.11", "python3.11-venv", "python3-pip"])
 
     if not candidates:
         return "找不到可用的自動安裝工具（winget/brew/apt-get）"
@@ -111,6 +116,7 @@ def attempt_install_python() -> str:
         proc = run_cmd(cmd)
         if proc.returncode != 0:
             return f"自動安裝命令失敗：{' '.join(cmd)}\n{proc.stderr.strip() or proc.stdout.strip()}"
+
     return "Python 安裝命令已執行，請重新開啟終端機後再執行本腳本"
 
 
@@ -125,14 +131,11 @@ def check_and_fix_packages(requirements: list[tuple[str, str]]) -> list[CheckRes
     results: list[CheckResult] = []
 
     for package_name, raw_spec in requirements:
-        required_spec = raw_spec[len(package_name) :].strip()
-        if not required_spec:
-            required_spec = "(any)"
+        required_spec = raw_spec[len(package_name) :].strip() or "(any)"
 
         try:
             current = importlib.metadata.version(package_name)
-            ok = required_spec == "(any)" or match_spec(current, required_spec)
-            if ok:
+            if required_spec == "(any)" or match_spec(current, required_spec):
                 results.append(CheckResult(package_name, required_spec, current, "OK", ""))
                 continue
         except importlib.metadata.PackageNotFoundError:
@@ -161,18 +164,18 @@ def print_results(results: list[CheckResult]) -> None:
 
 
 def main() -> int:
+    print("開始檢查環境與安裝需求，請稍候...", flush=True)
+
     if not REQUIREMENTS_PATH.exists():
         print(f"找不到 requirements.txt：{REQUIREMENTS_PATH}")
         return 1
 
     all_results: list[CheckResult] = []
-
     py_result = check_python()
     all_results.append(py_result)
 
     if py_result.status != "OK":
-        msg = attempt_install_python()
-        py_result.action = msg
+        py_result.action = attempt_install_python()
         print_results(all_results)
         print("\nPython 版本不符合需求，請完成 Python 安裝後重新執行本腳本。")
         return 1
@@ -181,9 +184,7 @@ def main() -> int:
     all_results.append(CheckResult("pip", ">=latest", "checked", "OK" if pip_ok else "FAIL", pip_msg))
 
     requirements = parse_requirements(REQUIREMENTS_PATH)
-    pkg_results = check_and_fix_packages(requirements)
-    all_results.extend(pkg_results)
-
+    all_results.extend(check_and_fix_packages(requirements))
     print_results(all_results)
 
     failed = [x for x in all_results if x.status == "FAIL"]
@@ -196,4 +197,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    exit_code = main()
+    wait_before_exit()
+    raise SystemExit(exit_code)

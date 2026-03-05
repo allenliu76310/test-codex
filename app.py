@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -48,7 +49,35 @@ class AnalysisTask:
 
 TASKS: dict[str, AnalysisTask] = {}
 TASK_LOCK = threading.Lock()
+START_TIME = time.time()
 
+
+def _log(message: str) -> None:
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}", flush=True)
+
+
+def _wait_before_exit(message: str = "按 Enter 鍵關閉視窗...") -> None:
+    if sys.stdin.isatty() and os.environ.get("NO_PAUSE_ON_EXIT") != "1":
+        try:
+            input(message)
+        except EOFError:
+            pass
+
+
+def _status_monitor(stop_event: threading.Event, interval_seconds: int = 10) -> None:
+    while not stop_event.wait(interval_seconds):
+        with TASK_LOCK:
+            total = len(TASKS)
+            running = sum(1 for t in TASKS.values() if t.status == "running")
+            queued = sum(1 for t in TASKS.values() if t.status == "queued")
+            done = sum(1 for t in TASKS.values() if t.status == "completed")
+            failed = sum(1 for t in TASKS.values() if t.status == "failed")
+            cancelled = sum(1 for t in TASKS.values() if t.status == "cancelled")
+        uptime = int(time.time() - START_TIME)
+        _log(
+            f"服務運行中 | uptime={uptime}s | 任務 total={total}, queued={queued}, running={running}, completed={done}, failed={failed}, cancelled={cancelled}"
+        )
 
 def _load_dependencies() -> tuple[object, object]:
     global cv2, np
@@ -215,6 +244,7 @@ def _update_task(task_id: str, **changes: object) -> None:
 
 def _process_task(task_id: str, temp_path: Path) -> None:
     _update_task(task_id, status="running", progress=1, message="初始化分析")
+    _log(f"任務開始：{task_id} ({Path(temp_path).name})")
 
     def on_progress(value: int, message: str) -> None:
         _update_task(task_id, progress=value, message=message)
@@ -227,14 +257,18 @@ def _process_task(task_id: str, temp_path: Path) -> None:
     try:
         result = analyze_video(temp_path, progress_callback=on_progress, should_cancel=should_cancel)
         _update_task(task_id, status="completed", progress=100, message="分析完成", result=result)
+        _log(f"任務完成：{task_id}")
     except RuntimeError as exc:
         msg = str(exc)
         if "取消" in msg:
             _update_task(task_id, status="cancelled", message="已取消", error=msg)
+            _log(f"任務取消：{task_id}")
         else:
             _update_task(task_id, status="failed", message="分析失敗", error=msg)
+            _log(f"任務失敗：{task_id} | {msg}")
     except Exception as exc:  # noqa: BLE001
         _update_task(task_id, status="failed", message="分析失敗", error=f"{exc}")
+        _log(f"任務異常：{task_id} | {exc}")
     finally:
         if temp_path.exists():
             os.remove(temp_path)
@@ -385,6 +419,7 @@ class FaceVideoHandler(BaseHTTPRequestHandler):
 
         worker = threading.Thread(target=_process_task, args=(task.task_id, temp_path), daemon=True)
         worker.start()
+        _log(f"任務已建立：{task.task_id} | 檔案={filename}")
         return task
 
     def _send_json(self, status: HTTPStatus, payload: dict) -> None:
@@ -611,9 +646,25 @@ class FaceVideoHandler(BaseHTTPRequestHandler):
 
 def run() -> None:
     server = ThreadingHTTPServer((HOST, PORT), FaceVideoHandler)
-    print(f"Server running at http://127.0.0.1:{PORT}")
-    server.serve_forever()
+    stop_event = threading.Event()
+    monitor = threading.Thread(target=_status_monitor, args=(stop_event,), daemon=True)
+    monitor.start()
+    _log(f"Server running at http://127.0.0.1:{PORT}")
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        _log("收到中斷訊號，準備關閉伺服器...")
+    finally:
+        stop_event.set()
+        server.server_close()
+        _log("伺服器已關閉")
 
 
 if __name__ == "__main__":
-    run()
+    try:
+        run()
+    except Exception as exc:  # noqa: BLE001
+        _log(f"啟動失敗：{exc}")
+        _wait_before_exit("程式已結束（發生錯誤）。按 Enter 鍵關閉視窗...")
+        raise
