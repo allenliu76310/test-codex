@@ -58,11 +58,15 @@ def _log(message: str) -> None:
 
 
 def _wait_before_exit(message: str = "按 Enter 鍵關閉視窗...") -> None:
-    if sys.stdin.isatty() and os.environ.get("NO_PAUSE_ON_EXIT") != "1":
-        try:
-            input(message)
-        except EOFError:
-            pass
+    if os.environ.get("NO_PAUSE_ON_EXIT") == "1":
+        return
+
+    try:
+        input(message)
+    except EOFError:
+        # 某些視窗執行模式沒有可互動 stdin，改用短暫停留避免瞬間關閉
+        _log("無法讀取鍵盤輸入，將在 10 秒後自動關閉...")
+        time.sleep(10)
 
 
 def _status_monitor(stop_event: threading.Event, interval_seconds: int = 10) -> None:
@@ -662,9 +666,11 @@ def run() -> None:
 
 
 if __name__ == "__main__":
+    exit_code = 0
     try:
         run()
     except Exception as exc:  # noqa: BLE001
+        exit_code = 1
         _log(f"啟動失敗：{exc}")
         _wait_before_exit("程式已結束（發生錯誤）。按 Enter 鍵關閉視窗...")
-        raise
+    raise SystemExit(exit_code)
