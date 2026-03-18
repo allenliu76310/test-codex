@@ -1,154 +1,239 @@
 from __future__ import annotations
 
+import argparse
 import cgi
+import html
+import io
 import json
 import os
 import tempfile
+import uuid
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
 
-try:
-    import cv2
-    import numpy as np
-except ModuleNotFoundError:
-    cv2 = None
-    np = None
+import easyocr
+import numpy as np
+import pypdfium2 as pdfium
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
+from openpyxl.utils import get_column_letter
+from PIL import Image
 
 HOST = "0.0.0.0"
 PORT = 5000
-ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
+SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".pdf"}
+EXCEL_CACHE: dict[str, tuple[str, bytes]] = {}
 
 
 @dataclass
-class PersonTrack:
-    person_id: int
-    embedding: np.ndarray
-    appearances: int = 1
+class OCRCell:
+    text: str
+    start_row: int
+    end_row: int
+    start_col: int
+    end_col: int
+    confidence: float
 
 
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    denominator = (np.linalg.norm(a) * np.linalg.norm(b))
-    if denominator == 0:
-        return 0.0
-    return float(np.dot(a, b) / denominator)
+@dataclass
+class OCRSheetLayout:
+    title: str
+    row_count: int
+    col_count: int
+    cells: list[OCRCell]
 
 
-def _face_embedding(face_gray: np.ndarray) -> np.ndarray:
-    normalized = cv2.resize(face_gray, (64, 64), interpolation=cv2.INTER_AREA)
-    embedding = normalized.astype(np.float32).flatten()
-    mean = embedding.mean()
-    std = embedding.std()
-    if std < 1e-6:
-        return embedding - mean
-    return (embedding - mean) / std
+class HandwritingToExcelConverter:
+    def __init__(self, languages: list[str], gpu: bool = False) -> None:
+        self.reader = easyocr.Reader(languages, gpu=gpu)
 
+    def process_document(self, input_path: Path, confidence_threshold: float = 0.2) -> list[OCRSheetLayout]:
+        pages = self._load_pages(input_path)
+        layouts: list[OCRSheetLayout] = []
 
-def analyze_video(video_path: Path, frame_stride: int = 12, similarity_threshold: float = 0.86) -> dict:
-    if cv2 is None or np is None:
-        raise RuntimeError(
-            "缺少必要套件：opencv-python 與 numpy。"
-            "請先執行 `pip install -r requirements.txt` 後再分析影片。"
+        for index, image in enumerate(pages, start=1):
+            title = f"Page_{index}"
+            layouts.append(self._analyze_page(image, title, confidence_threshold))
+
+        return layouts
+
+    def create_workbook_bytes(self, layouts: list[OCRSheetLayout]) -> bytes:
+        workbook = Workbook()
+        default_sheet = workbook.active
+        workbook.remove(default_sheet)
+
+        for layout in layouts:
+            sheet = workbook.create_sheet(layout.title)
+            self._write_layout_to_sheet(sheet, layout)
+
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        return buffer.getvalue()
+
+    def _load_pages(self, input_path: Path) -> list[Image.Image]:
+        ext = input_path.suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            raise ValueError(f"不支援的檔案格式：{ext}")
+
+        if ext == ".pdf":
+            return self._render_pdf_pages(input_path)
+
+        return [Image.open(input_path).convert("RGB")]
+
+    def _render_pdf_pages(self, pdf_path: Path) -> list[Image.Image]:
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        pages: list[Image.Image] = []
+
+        for index in range(len(pdf)):
+            page = pdf.get_page(index)
+            bitmap = page.render(scale=220 / 72)
+            pages.append(bitmap.to_pil().convert("RGB"))
+            page.close()
+
+        pdf.close()
+        return pages
+
+    def _analyze_page(self, image: Image.Image, title: str, confidence_threshold: float) -> OCRSheetLayout:
+        image_array = np.array(image)
+        height, width = image_array.shape[:2]
+
+        results = self.reader.readtext(
+            image_array,
+            detail=1,
+            paragraph=False,
+            text_threshold=0.5,
+            low_text=0.2,
+            width_ths=0.7,
         )
 
-    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    detector = cv2.CascadeClassifier(cascade_path)
+        filtered = [item for item in results if item[2] >= confidence_threshold and item[1].strip()]
 
-    if detector.empty():
-        raise RuntimeError("無法載入人臉偵測模型（Haar Cascade）。")
+        row_count = min(max(int(height / 45), 20), 220)
+        col_count = min(max(int(width / 90), 12), 120)
+        row_height_px = height / row_count
+        col_width_px = width / col_count
 
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError("影片無法開啟，請確認檔案格式。")
+        cells: list[OCRCell] = []
+        for bbox, text, confidence in filtered:
+            xs = [point[0] for point in bbox]
+            ys = [point[1] for point in bbox]
+            x_min, x_max = max(min(xs), 0), min(max(xs), width)
+            y_min, y_max = max(min(ys), 0), min(max(ys), height)
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0:
-        fps = 30.0
+            start_col = max(1, min(col_count, int(x_min / col_width_px) + 1))
+            end_col = max(1, min(col_count, int(np.ceil(x_max / col_width_px))))
+            start_row = max(1, min(row_count, int(y_min / row_height_px) + 1))
+            end_row = max(1, min(row_count, int(np.ceil(y_max / row_height_px))))
 
-    tracks: list[PersonTrack] = []
-    frame_index = 0
-    total_faces_detected = 0
-
-    try:
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-
-            if frame_index % frame_stride != 0:
-                frame_index += 1
-                continue
-
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = detector.detectMultiScale(
-                gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(40, 40),
+            cells.append(
+                OCRCell(
+                    text=text,
+                    start_row=start_row,
+                    end_row=end_row,
+                    start_col=start_col,
+                    end_col=end_col,
+                    confidence=float(confidence),
+                )
             )
 
-            for x, y, w, h in faces:
-                roi = gray[y : y + h, x : x + w]
-                embedding = _face_embedding(roi)
-                total_faces_detected += 1
+        return OCRSheetLayout(title=title, row_count=row_count, col_count=col_count, cells=cells)
 
-                if not tracks:
-                    tracks.append(PersonTrack(person_id=1, embedding=embedding))
+    def _write_layout_to_sheet(self, sheet, layout: OCRSheetLayout) -> None:
+        for row in range(1, layout.row_count + 1):
+            sheet.row_dimensions[row].height = 18
+
+        for col in range(1, layout.col_count + 1):
+            sheet.column_dimensions[get_column_letter(col)].width = 12
+
+        for cell_data in layout.cells:
+            cell = sheet.cell(row=cell_data.start_row, column=cell_data.start_col, value=cell_data.text)
+            cell.number_format = "@"
+            cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            cell.font = Font(size=11)
+            if cell_data.confidence < 0.4:
+                cell.font = Font(size=11, color="FF7F50")
+
+            if cell_data.end_row > cell_data.start_row or cell_data.end_col > cell_data.start_col:
+                try:
+                    sheet.merge_cells(
+                        start_row=cell_data.start_row,
+                        start_column=cell_data.start_col,
+                        end_row=cell_data.end_row,
+                        end_column=cell_data.end_col,
+                    )
+                except ValueError:
                     continue
 
-                similarities = [_cosine_similarity(embedding, t.embedding) for t in tracks]
-                best_idx = int(np.argmax(similarities))
-                best_score = similarities[best_idx]
 
-                if best_score >= similarity_threshold:
-                    track = tracks[best_idx]
-                    track.appearances += 1
-                    # 輕微更新特徵向量，讓相似人臉匹配更穩定
-                    track.embedding = (0.85 * track.embedding) + (0.15 * embedding)
-                else:
-                    tracks.append(
-                        PersonTrack(person_id=len(tracks) + 1, embedding=embedding)
-                    )
-
-            frame_index += 1
-    finally:
-        cap.release()
-
-    duration_seconds = frame_index / fps if fps else 0.0
-
-    people = [
-        {
-            "person_id": t.person_id,
-            "appearances": t.appearances,
-            "is_repeated": t.appearances > 1,
-        }
-        for t in tracks
-    ]
-
-    repeated_count = sum(1 for t in tracks if t.appearances > 1)
-
-    return {
-        "video": video_path.name,
-        "duration_seconds": round(duration_seconds, 2),
-        "sampled_frames": frame_index // frame_stride + (1 if frame_index > 0 else 0),
-        "faces_detected": total_faces_detected,
-        "unique_people": len(tracks),
-        "repeated_people": repeated_count,
-        "people": people,
-    }
+def build_preview_html(layouts: list[OCRSheetLayout]) -> str:
+    pages_html = [render_sheet_html(layout) for layout in layouts]
+    return "\n".join(pages_html)
 
 
-class FaceVideoHandler(BaseHTTPRequestHandler):
+def render_sheet_html(layout: OCRSheetLayout) -> str:
+    grid: dict[tuple[int, int], OCRCell] = {}
+    covered: set[tuple[int, int]] = set()
+
+    for cell in layout.cells:
+        grid[(cell.start_row, cell.start_col)] = cell
+        for row in range(cell.start_row, cell.end_row + 1):
+            for col in range(cell.start_col, cell.end_col + 1):
+                if row == cell.start_row and col == cell.start_col:
+                    continue
+                covered.add((row, col))
+
+    rows: list[str] = []
+    max_preview_rows = min(layout.row_count, 60)
+    max_preview_cols = min(layout.col_count, 32)
+
+    for row in range(1, max_preview_rows + 1):
+        tds: list[str] = []
+        for col in range(1, max_preview_cols + 1):
+            if (row, col) in covered:
+                continue
+
+            cell = grid.get((row, col))
+            if cell is None:
+                tds.append('<td class="empty"></td>')
+                continue
+
+            rowspan = min(cell.end_row, max_preview_rows) - cell.start_row + 1
+            colspan = min(cell.end_col, max_preview_cols) - cell.start_col + 1
+            safe_text = html.escape(cell.text).replace("\n", "<br>")
+            cls = "low-confidence" if cell.confidence < 0.4 else ""
+            tds.append(
+                f'<td class="{cls}" rowspan="{rowspan}" colspan="{colspan}" title="信心值 {cell.confidence:.2f}">{safe_text}</td>'
+            )
+
+        rows.append(f"<tr>{''.join(tds)}</tr>")
+
+    table_rows = "".join(rows)
+    return (
+        f'<section class="sheet">'
+        f'<h3>{html.escape(layout.title)}</h3>'
+        f'<div class="sheet-wrap"><table class="excel-like">{table_rows}</table></div>'
+        f"</section>"
+    )
+
+
+class OCRWebHandler(BaseHTTPRequestHandler):
+    converter = HandwritingToExcelConverter(languages=["ch_tra", "en"], gpu=False)
+
     def do_GET(self) -> None:
-        if self.path != "/":
-            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+        parsed = urlparse(self.path)
+        if parsed.path == "/":
+            self._send_html(HTTPStatus.OK, self._render_index())
             return
 
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(self._render_html().encode("utf-8"))
+        if parsed.path == "/download":
+            self._handle_download(parsed)
+            return
+
+        self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
 
     def do_POST(self) -> None:
         if self.path != "/analyze":
@@ -156,17 +241,17 @@ class FaceVideoHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            result = self._handle_upload_and_analyze()
-            self._send_json(HTTPStatus.OK, result)
+            payload = self._handle_upload()
+            self._send_json(HTTPStatus.OK, payload)
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"分析失敗：{exc}"})
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"處理失敗：{exc}"})
 
-    def _handle_upload_and_analyze(self) -> dict:
+    def _handle_upload(self) -> dict[str, Any]:
         content_type = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in content_type:
-            raise ValueError("請使用 multipart/form-data 上傳影片。")
+            raise ValueError("請使用表單上傳檔案。")
 
         form = cgi.FieldStorage(
             fp=self.rfile,
@@ -177,26 +262,66 @@ class FaceVideoHandler(BaseHTTPRequestHandler):
             },
         )
 
-        file_item = form["video"] if "video" in form else None
+        file_item = form["file"] if "file" in form else None
         if file_item is None or not getattr(file_item, "filename", ""):
-            raise ValueError("請上傳影片檔案。")
+            raise ValueError("請上傳圖片或 PDF 檔案。")
+
+        confidence = 0.2
+        if "confidence_threshold" in form:
+            confidence = float(form.getvalue("confidence_threshold"))
 
         filename = Path(file_item.filename).name
         ext = Path(filename).suffix.lower()
-        if ext not in ALLOWED_EXTENSIONS:
-            raise ValueError(f"不支援的副檔名：{ext}。支援格式：{', '.join(sorted(ALLOWED_EXTENSIONS))}")
+        if ext not in SUPPORTED_EXTENSIONS:
+            raise ValueError(f"不支援的副檔名：{ext}")
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
             temp_file.write(file_item.file.read())
             temp_path = Path(temp_file.name)
 
         try:
-            return analyze_video(temp_path)
+            layouts = self.converter.process_document(temp_path, confidence_threshold=confidence)
+            preview_html = build_preview_html(layouts)
+            excel_bytes = self.converter.create_workbook_bytes(layouts)
         finally:
             if temp_path.exists():
                 os.remove(temp_path)
 
-    def _send_json(self, status: HTTPStatus, payload: dict) -> None:
+        token = uuid.uuid4().hex
+        excel_name = f"{Path(filename).stem}_ocr.xlsx"
+        EXCEL_CACHE[token] = (excel_name, excel_bytes)
+
+        return {
+            "preview_html": preview_html,
+            "download_url": f"/download?token={token}",
+            "excel_filename": excel_name,
+            "sheet_count": len(layouts),
+        }
+
+    def _handle_download(self, parsed) -> None:
+        query = parse_qs(parsed.query)
+        token = query.get("token", [""])[0]
+        if not token or token not in EXCEL_CACHE:
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return
+
+        filename, content = EXCEL_CACHE[token]
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _send_html(self, status: HTTPStatus, body: str) -> None:
+        payload = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -204,154 +329,154 @@ class FaceVideoHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _render_html(self) -> str:
+    def _render_index(self) -> str:
         return """<!doctype html>
 <html lang=\"zh-Hant\">
 <head>
   <meta charset=\"UTF-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
-  <title>影片人臉重複辨識</title>
+  <title>中文手寫 OCR 轉 Excel</title>
   <style>
-    :root { color-scheme: light; }
-    body { font-family: Arial, sans-serif; margin: 0; background: #f4f7fc; color: #1e293b; }
-    .container { max-width: 920px; margin: 32px auto; background: #fff; border-radius: 14px; padding: 24px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); }
+    body { font-family: Arial, sans-serif; margin: 0; background: #f5f7fb; color: #1f2937; }
+    .container { max-width: 1200px; margin: 24px auto; padding: 24px; background: #fff; border-radius: 12px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); }
     h1 { margin-top: 0; }
-    .dropzone {
-      border: 2px dashed #93c5fd;
-      border-radius: 12px;
-      padding: 30px;
-      text-align: center;
-      background: #eff6ff;
-      transition: all 0.2s ease;
-      cursor: pointer;
-    }
-    .dropzone.dragover { border-color: #2563eb; background: #dbeafe; }
-    .meta { color: #475569; margin: 8px 0 0; }
-    .btn {
-      margin-top: 16px;
-      background: #2563eb;
-      color: #fff;
-      border: none;
-      border-radius: 10px;
-      padding: 10px 16px;
-      font-size: 15px;
-      cursor: pointer;
-    }
+    .dropzone { border: 2px dashed #60a5fa; border-radius: 10px; background: #eff6ff; padding: 30px; text-align: center; cursor: pointer; }
+    .dropzone.dragover { border-color: #1d4ed8; background: #dbeafe; }
+    .controls { margin-top: 12px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+    .btn { margin-top: 14px; background: #2563eb; color: #fff; border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
     .btn:disabled { opacity: .6; cursor: not-allowed; }
-    #result { margin-top: 24px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { border-bottom: 1px solid #e2e8f0; padding: 10px; text-align: left; }
-    th { background: #f8fafc; }
-    .error { color: #b91c1c; font-weight: 700; }
-    .success { color: #166534; font-weight: 700; }
+    #status { margin-top: 12px; font-weight: 700; }
+    #preview { margin-top: 20px; }
+    .sheet { margin-top: 24px; }
+    .sheet-wrap { border: 1px solid #cbd5e1; overflow: auto; max-height: 620px; background: white; }
+    .excel-like { border-collapse: collapse; table-layout: fixed; }
+    .excel-like td { min-width: 90px; height: 28px; border: 1px solid #e2e8f0; padding: 4px 6px; vertical-align: top; white-space: pre-wrap; }
+    .excel-like td.empty { background: #f8fafc; }
+    .low-confidence { color: #c2410c; }
+    .download-link { display: inline-block; margin-top: 12px; font-weight: 700; color: #1d4ed8; }
   </style>
 </head>
 <body>
   <div class=\"container\">
-    <h1>影片人臉重複辨識工具</h1>
-    <p>拖曳影片到下方區塊，系統會偵測影片中的人臉並判斷是否重複出現。</p>
+    <h1>中文手寫字辨識（圖片/PDF → Excel）</h1>
+    <p>拖曳檔案進來後，會在下方先顯示近似 Excel 的內容預覽，同時可下載 `.xlsx`。</p>
 
     <div id=\"dropzone\" class=\"dropzone\">
-      <p><strong>拖曳影片到這裡，或點擊選擇檔案</strong></p>
-      <p class=\"meta\">支援：.mp4 .mov .avi .mkv .m4v</p>
-      <input id=\"videoInput\" type=\"file\" accept=\"video/*\" hidden />
-      <p id=\"selectedFile\" class=\"meta\">尚未選擇檔案</p>
+      <p><strong>拖曳圖片或 PDF 到這裡，或點擊選擇檔案</strong></p>
+      <p>支援：png/jpg/jpeg/bmp/tif/tiff/pdf</p>
+      <input id=\"fileInput\" type=\"file\" accept=\".png,.jpg,.jpeg,.bmp,.tif,.tiff,.pdf\" hidden />
+      <p id=\"selectedFile\">尚未選擇檔案</p>
     </div>
 
-    <button id=\"analyzeBtn\" class=\"btn\" disabled>開始分析</button>
+    <div class=\"controls\">
+      <label>信心值門檻：
+        <input id=\"confidence\" type=\"number\" min=\"0\" max=\"1\" step=\"0.05\" value=\"0.2\" />
+      </label>
+    </div>
 
-    <div id=\"result\"></div>
+    <button id=\"analyzeBtn\" class=\"btn\" disabled>開始辨識</button>
+    <div id=\"status\"></div>
+    <a id=\"downloadLink\" class=\"download-link\" href=\"#\" style=\"display:none\">下載 Excel</a>
+
+    <div id=\"preview\"></div>
   </div>
 
   <script>
     const dropzone = document.getElementById('dropzone');
-    const videoInput = document.getElementById('videoInput');
+    const fileInput = document.getElementById('fileInput');
     const analyzeBtn = document.getElementById('analyzeBtn');
     const selectedFile = document.getElementById('selectedFile');
-    const result = document.getElementById('result');
+    const statusEl = document.getElementById('status');
+    const previewEl = document.getElementById('preview');
+    const confidenceEl = document.getElementById('confidence');
+    const downloadLink = document.getElementById('downloadLink');
 
-    let file = null;
+    let chosenFile = null;
 
-    function setFile(f) {
-      file = f;
-      selectedFile.textContent = f ? `已選擇：${f.name}` : '尚未選擇檔案';
-      analyzeBtn.disabled = !f;
+    function setFile(file) {
+      chosenFile = file;
+      if (file) {
+        selectedFile.textContent = `已選擇：${file.name}`;
+        analyzeBtn.disabled = false;
+      } else {
+        selectedFile.textContent = '尚未選擇檔案';
+        analyzeBtn.disabled = true;
+      }
     }
 
-    dropzone.addEventListener('click', () => videoInput.click());
-    videoInput.addEventListener('change', () => setFile(videoInput.files[0] || null));
+    dropzone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => setFile(fileInput.files[0] || null));
 
-    dropzone.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      dropzone.classList.add('dragover');
+    ['dragenter', 'dragover'].forEach(eventName => {
+      dropzone.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        dropzone.classList.add('dragover');
+      });
     });
 
-    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    ['dragleave', 'drop'].forEach(eventName => {
+      dropzone.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        dropzone.classList.remove('dragover');
+      });
+    });
 
     dropzone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      dropzone.classList.remove('dragover');
-      if (e.dataTransfer.files.length > 0) {
-        setFile(e.dataTransfer.files[0]);
-      }
+      const files = e.dataTransfer.files;
+      if (!files || files.length === 0) return;
+      setFile(files[0]);
     });
 
     analyzeBtn.addEventListener('click', async () => {
-      if (!file) return;
+      if (!chosenFile) return;
+
+      statusEl.textContent = '辨識中，請稍候...';
+      previewEl.innerHTML = '';
+      downloadLink.style.display = 'none';
+      analyzeBtn.disabled = true;
 
       const form = new FormData();
-      form.append('video', file);
-
-      analyzeBtn.disabled = true;
-      result.innerHTML = '<p>分析中，請稍候...</p>';
+      form.append('file', chosenFile);
+      form.append('confidence_threshold', confidenceEl.value || '0.2');
 
       try {
-        const response = await fetch('/analyze', { method: 'POST', body: form });
-        const data = await response.json();
+        const resp = await fetch('/analyze', { method: 'POST', body: form });
+        const data = await resp.json();
 
-        if (!response.ok) {
-          result.innerHTML = `<p class=\"error\">${data.error || '發生錯誤'}</p>`;
+        if (!resp.ok) {
+          statusEl.textContent = data.error || '辨識失敗';
           return;
         }
 
-        const rows = data.people.map((p) => `
-          <tr>
-            <td>人物 ${p.person_id}</td>
-            <td>${p.appearances}</td>
-            <td>${p.is_repeated ? '是' : '否'}</td>
-          </tr>
-        `).join('');
-
-        result.innerHTML = `
-          <p class=\"success\">分析完成：${data.video}</p>
-          <ul>
-            <li>影片長度：約 ${data.duration_seconds} 秒</li>
-            <li>偵測到人臉次數：${data.faces_detected}</li>
-            <li>辨識到不同人物數：${data.unique_people}</li>
-            <li>重複出現人物數：${data.repeated_people}</li>
-          </ul>
-          <table>
-            <thead><tr><th>人物</th><th>出現次數</th><th>是否重複出現</th></tr></thead>
-            <tbody>${rows || '<tr><td colspan="3">沒有偵測到人臉</td></tr>'}</tbody>
-          </table>
-        `;
+        statusEl.textContent = `完成：共 ${data.sheet_count} 頁。下方為 Excel 版面預覽。`;
+        previewEl.innerHTML = data.preview_html;
+        downloadLink.href = data.download_url;
+        downloadLink.textContent = `下載 ${data.excel_filename}`;
+        downloadLink.style.display = 'inline-block';
       } catch (err) {
-        result.innerHTML = `<p class=\"error\">分析失敗：${err.message}</p>`;
+        statusEl.textContent = `發生錯誤：${err}`;
       } finally {
         analyzeBtn.disabled = false;
       }
     });
   </script>
 </body>
-</html>
-"""
+</html>"""
 
 
-def run() -> None:
-    server = ThreadingHTTPServer((HOST, PORT), FaceVideoHandler)
-    print(f"Server running at http://127.0.0.1:{PORT}")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="中文手寫字辨識 Web UI")
+    parser.add_argument("--host", default=HOST, help="服務監聽主機")
+    parser.add_argument("--port", type=int, default=PORT, help="服務埠號")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    server = ThreadingHTTPServer((args.host, args.port), OCRWebHandler)
+    print(f"服務已啟動：http://{args.host}:{args.port}")
     server.serve_forever()
 
 
 if __name__ == "__main__":
-    run()
+    main()

@@ -1,58 +1,45 @@
-# 影片人臉重複辨識工具
+# 中文手寫字辨識轉 Excel（Web UI）
 
-這是一個 Python Web 程式，提供「拖曳影片上傳」介面，並分析影片中的人臉是否重複出現。
+這是一個 Python Web 程式，提供拖曳上傳介面：
+
+1. 上傳圖片或 PDF（可拖曳）
+2. 執行中文手寫 OCR
+3. 在頁面上直接顯示「接近 Excel 版面」的預覽
+4. 下載 `.xlsx` 檔案
 
 ## 功能
 
-- 拖曳上傳影片（或點擊選擇檔案）
-- 自動偵測人臉
-- 分群判斷是否為同一人
-- 顯示每位人物的出現次數與是否重複出現
+- 拖曳/點擊上傳圖片或 PDF
+- OCR 解析中文手寫內容（EasyOCR）
+- 以儲存格映射 + 合併儲存格方式保留版面
+- UI 顯示 Excel-like 表格預覽
+- 一鍵下載轉換後的 Excel
 
-## 安裝需求
+## 安裝
 
-建議使用 Python 3.10+
+建議 Python 3.10+
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 啟動方式
+## 啟動
 
 ```bash
-python app.py
+python app.py --host 0.0.0.0 --port 5000
 ```
 
-開啟瀏覽器：`http://127.0.0.1:5000`
+開啟：`http://127.0.0.1:5000`
+
+## 使用方式
+
+- 將檔案拖入頁面（或點擊選擇檔案）
+- 視需要調整「信心值門檻」
+- 點擊「開始辨識」
+- 頁面會顯示 Excel 版面預覽，並提供下載連結
 
 ## 注意事項
 
-- 目前使用 OpenCV Haar Cascade + 特徵向量相似度做人物分群，屬於輕量版本。
-- 影片解析度、角度、光線、遮擋都會影響辨識結果。
-
-## 測試常見問題排除
-
-### 1) `ModuleNotFoundError: No module named 'cv2'`
-
-代表 OpenCV 尚未安裝，請先安裝相依套件：
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2) `pip install` 因公司網路/代理失敗
-
-若環境需要代理，先設定代理再安裝：
-
-```bash
-export HTTPS_PROXY=http://<proxy-host>:<port>
-export HTTP_PROXY=http://<proxy-host>:<port>
-pip install -r requirements.txt
-```
-
-如果你在離線環境，建議在可連網機器先下載 wheel，再帶入目標機安裝。
-
-### 3) 啟動服務可以成功，但分析時顯示缺少套件
-
-新版程式允許「未安裝 OpenCV 也能先啟動 UI」，但按下分析時會回傳清楚錯誤訊息。
-此時只要完成 `pip install -r requirements.txt`，重新啟動即可。
+- 版面保留為近似還原，非 100% 像素級一致。
+- OCR 準確度取決於字跡清晰度、掃描品質、光線與解析度。
+- 若 PDF 頁數很多或解析度很高，處理時間會增加。
