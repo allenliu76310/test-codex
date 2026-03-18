@@ -1,13 +1,15 @@
-# 影片人臉重複辨識工具
+# 中文手寫字辨識轉 Excel 工具
 
-這是一個 Python Web 程式，提供「拖曳影片上傳」介面，並分析影片中的人臉是否重複出現。
+這是一個 Python 程式，用來將「中文手寫文字」的圖片或 PDF 檔案轉成 Excel（`.xlsx`）。
+程式會依 OCR 偵測到的文字框位置，盡量把文字放到對應的儲存格區域，以保留原本版面。
 
 ## 功能
 
-- 拖曳上傳影片（或點擊選擇檔案）
-- 自動偵測人臉
-- 分群判斷是否為同一人
-- 顯示每位人物的出現次數與是否重複出現
+- 支援輸入：圖片（png/jpg/jpeg/bmp/tif/tiff）與 PDF
+- 使用 EasyOCR 進行中文手寫文字辨識
+- 輸出為 Excel（每頁一個工作表）
+- 依文字框位置映射到儲存格，並嘗試合併儲存格維持版型
+- 可調整信心值門檻，過濾低可信度辨識結果
 
 ## 安裝需求
 
@@ -17,42 +19,27 @@
 pip install -r requirements.txt
 ```
 
-## 啟動方式
+## 使用方式
 
 ```bash
-python app.py
+python app.py <輸入檔案> <輸出檔案.xlsx>
 ```
 
-開啟瀏覽器：`http://127.0.0.1:5000`
+範例：
+
+```bash
+python app.py samples/handwriting.pdf output/result.xlsx
+python app.py samples/note.jpg output/result.xlsx --confidence-threshold 0.3
+```
+
+### 可用參數
+
+- `--languages`: OCR 語言代碼（預設 `ch_tra en`）
+- `--gpu`: 若有 CUDA 可開啟 GPU 推論
+- `--confidence-threshold`: 文字信心值門檻（預設 `0.2`）
 
 ## 注意事項
 
-- 目前使用 OpenCV Haar Cascade + 特徵向量相似度做人物分群，屬於輕量版本。
-- 影片解析度、角度、光線、遮擋都會影響辨識結果。
-
-## 測試常見問題排除
-
-### 1) `ModuleNotFoundError: No module named 'cv2'`
-
-代表 OpenCV 尚未安裝，請先安裝相依套件：
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2) `pip install` 因公司網路/代理失敗
-
-若環境需要代理，先設定代理再安裝：
-
-```bash
-export HTTPS_PROXY=http://<proxy-host>:<port>
-export HTTP_PROXY=http://<proxy-host>:<port>
-pip install -r requirements.txt
-```
-
-如果你在離線環境，建議在可連網機器先下載 wheel，再帶入目標機安裝。
-
-### 3) 啟動服務可以成功，但分析時顯示缺少套件
-
-新版程式允許「未安裝 OpenCV 也能先啟動 UI」，但按下分析時會回傳清楚錯誤訊息。
-此時只要完成 `pip install -r requirements.txt`，重新啟動即可。
+- 「盡量維持格式」是透過「文字框位置映射 + 儲存格合併」達成，無法保證 100% 還原。
+- 手寫字的準確率會受字跡、拍攝角度、解析度、光線影響。
+- 若是掃描品質較差，建議先做影像前處理（去噪、增強對比）再辨識。
