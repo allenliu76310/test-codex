@@ -1,45 +1,81 @@
-# 中文手寫字辨識轉 Excel 工具
+# 雲端餐飲 POS 系統（手機點餐 + 即時銷售圖表）
 
-這是一個 Python 程式，用來將「中文手寫文字」的圖片或 PDF 檔案轉成 Excel（`.xlsx`）。
-程式會依 OCR 偵測到的文字框位置，盡量把文字放到對應的儲存格區域，以保留原本版面。
+這是一個可快速啟動的雲端餐飲 POS 範例系統，提供：
 
-## 功能
+- 服務人員可用手機操作的點餐介面
+- 即時銷售數據後台（KPI + 圖表）
+- REST API（菜單、建立訂單、即時銷售統計）
 
-- 支援輸入：圖片（png/jpg/jpeg/bmp/tif/tiff）與 PDF
-- 使用 EasyOCR 進行中文手寫文字辨識
-- 輸出為 Excel（每頁一個工作表）
-- 依文字框位置映射到儲存格，並嘗試合併儲存格維持版型
-- 可調整信心值門檻，過濾低可信度辨識結果
+> 技術棧：Flask + SQLite + Chart.js
 
-## 安裝需求
+## 功能特色
 
-建議使用 Python 3.10+
+### 1) 服務人員手機點餐
+- 響應式介面，手機可直接操作
+- 可選擇桌號、服務人員、備註
+- 加入/移除餐點、即時計算小計
+- 送出訂單後寫入資料庫
+
+### 2) 即時銷售後台
+- 今日營收
+- 今日訂單數
+- 平均客單價
+- 近一小時營收
+- 每小時營收折線圖
+- 熱銷品項 Top 5 長條圖
+- 每 5 秒自動更新
+
+## 安裝與啟動
+
+### 安裝
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 使用方式
+### 啟動
 
 ```bash
-python app.py <輸入檔案> <輸出檔案.xlsx>
+python app.py
 ```
 
-範例：
+啟動後預設網址：
+
+- 點餐台：<http://127.0.0.1:8000/waiter>
+- 銷售後台：<http://127.0.0.1:8000/dashboard>
+
+## API 範例
+
+### 取得菜單
 
 ```bash
-python app.py samples/handwriting.pdf output/result.xlsx
-python app.py samples/note.jpg output/result.xlsx --confidence-threshold 0.3
+curl http://127.0.0.1:8000/api/menu
 ```
 
-### 可用參數
+### 建立訂單
 
-- `--languages`: OCR 語言代碼（預設 `ch_tra en`）
-- `--gpu`: 若有 CUDA 可開啟 GPU 推論
-- `--confidence-threshold`: 文字信心值門檻（預設 `0.2`）
+```bash
+curl -X POST http://127.0.0.1:8000/api/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "table_no": "A12",
+    "staff_name": "Amy",
+    "note": "少冰",
+    "items": [
+      {"menu_item_id": 1, "quantity": 1},
+      {"menu_item_id": 5, "quantity": 2}
+    ]
+  }'
+```
 
-## 注意事項
+### 取得即時銷售資料
 
-- 「盡量維持格式」是透過「文字框位置映射 + 儲存格合併」達成，無法保證 100% 還原。
-- 手寫字的準確率會受字跡、拍攝角度、解析度、光線影響。
-- 若是掃描品質較差，建議先做影像前處理（去噪、增強對比）再辨識。
+```bash
+curl http://127.0.0.1:8000/api/sales/realtime
+```
+
+## 專案結構
+
+- `app.py`：Flask 主程式（頁面 + API + 資料庫初始化）
+- `requirements.txt`：依賴套件
+- `pos.db`：SQLite 資料庫（啟動後自動建立）
